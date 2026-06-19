@@ -2,6 +2,8 @@ package org.levimc.launcher.util;
 
 import android.content.Context;
 import android.os.Environment;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 
 import org.levimc.launcher.settings.FeatureSettings;
 
@@ -34,13 +36,20 @@ public final class LauncherStorage {
     private static final String BACKUPS_DIR = "backups";
     private static final String WORLDS_DIR = "worlds";
     private static final Object CACHE_LOCK = new Object();
+
     private static volatile File cachedTargetAppRoot;
+    private static volatile Boolean cachedUsingSdCard;
 
     private LauncherStorage() {
     }
 
     public static File getAppRoot(Context context) {
         return getTargetAppRoot(context);
+    }
+
+    public static boolean isUsingSdCard(Context context) {
+        getTargetAppRoot(context);
+        return Boolean.TRUE.equals(cachedUsingSdCard);
     }
 
     public static File getTargetAppRoot(Context context) {
@@ -61,17 +70,38 @@ public final class LauncherStorage {
 
     private static File resolveTargetAppRoot(Context context) {
         File[] mediaDirs = context.getExternalMediaDirs();
+        File fallback = null;
+
         if (mediaDirs != null) {
             for (File mediaDir : mediaDirs) {
+                if (mediaDir == null) {
+                    continue;
+                }
+
                 File appRoot = buildTargetMediaAppRoot(mediaDir);
-                if (ensureDir(appRoot)) {
+                if (!ensureDir(appRoot)) {
+                    continue;
+                }
+
+                if (fallback == null) {
+                    fallback = appRoot;
+                }
+
+                if (isSdCardVolume(context, appRoot)) {
+                    cachedUsingSdCard = Boolean.TRUE;
                     return appRoot;
                 }
             }
         }
 
+        if (fallback != null) {
+            cachedUsingSdCard = Boolean.FALSE;
+            return fallback;
+        }
+
         File internalFallback = context.getFilesDir();
         ensureDir(internalFallback);
+        cachedUsingSdCard = Boolean.FALSE;
         return internalFallback;
     }
 
@@ -79,8 +109,23 @@ public final class LauncherStorage {
         return mediaDir;
     }
 
+    private static boolean isSdCardVolume(Context context, File path) {
+        try {
+            StorageManager storageManager = (StorageManager) context.getSystemService(Context.STORAGE_SERVICE);
+            if (storageManager == null) {
+                return false;
+            }
+
+            StorageVolume volume = storageManager.getStorageVolume(path);
+            return volume != null && volume.isRemovable();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     public static String getTargetAppRootDisplayPath(Context context) {
-        return buildTargetAppRootDisplayPath(context.getPackageName());
+        File root = getTargetAppRoot(context);
+        return root != null ? root.getAbsolutePath() : buildTargetAppRootDisplayPath(context.getPackageName());
     }
 
     static String buildTargetAppRootDisplayPath(String packageName) {
@@ -106,6 +151,7 @@ public final class LauncherStorage {
     public static void invalidateCache() {
         synchronized (CACHE_LOCK) {
             cachedTargetAppRoot = null;
+            cachedUsingSdCard = null;
         }
     }
 
